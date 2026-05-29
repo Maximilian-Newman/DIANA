@@ -2,7 +2,7 @@ const char busID = '0';
 String VERSION = "0.1";
 
 /*
-Connected to main DIANA flight computer via serial connection
+Connected to main DIANA flight computer via serial1 connection
 can have multiple in parallel as long as all have a different busID
 
 
@@ -41,7 +41,7 @@ unsigned int numSamples = 0;
 unsigned int lastSampleRate = 0;
 
 void setup() {
-  Serial.begin(115200);
+  Serial1.begin(115200);
   Wire.begin();
   delay(2000);
 
@@ -65,51 +65,51 @@ void loop() {
 
     else if (millis() - lastUpdate > 50){
       working = false;
-      Serial.println("EEEEEEEEEEE");
+      Serial1.println("EEEEEEEEEEE");
     }
 
 
     if (freqTimer - millis() > 1000) {
       freqTimer += 1000;
       lastSampleRate = numSamples;
-      //Serial.println();
-      //Serial.println(numSamples); // getting 150 Hz sample rate
+      //Serial1.println();
+      //Serial1.println(numSamples); // getting 150 Hz sample rate
       numSamples = 0;
     }
   }
 
 
 
-  if (Serial.available()){
+  if (Serial1.available()){
     delay(1);
-    char reqBus = Serial.read();
-    char cmd = Serial.read();
+    char reqBus = Serial1.read();
+    char cmd = Serial1.read();
 
-    //Serial.write(reqBus);
-    //Serial.write(cmd);
+    //Serial1.write(reqBus);
+    //Serial1.write(cmd);
 
     if (reqBus == busID){
       if (cmd == 'r'){
         if (working) {
-          Serial.write('1');
+          Serial1.write('1');
 
-          Serial.print(mpu.getPitch());
-          Serial.write(',');
-          Serial.print(mpu.getRoll());
-          Serial.write(',');
-          Serial.print(mpu.getPitch());
-          Serial.write(',');
-          Serial.print(lastSampleRate);
-          Serial.write('\n');
+          Serial1.print(mpu.getPitch());
+          Serial1.write(',');
+          Serial1.print(mpu.getRoll());
+          Serial1.write(',');
+          Serial1.print(mpu.getPitch());
+          Serial1.write(',');
+          Serial1.print(lastSampleRate);
+          Serial1.write('\n');
         }
         else {
-          Serial.print("0\n");
+          Serial1.print("0\n");
         }
       }
 
       else if (cmd == 'f') {working = false;}
       else if (cmd == 'w') {working = true;}
-      else if (cmd == 'v') {Serial.println(VERSION);}
+      else if (cmd == 'v') {Serial1.println(VERSION);}
     }
   }
 }
