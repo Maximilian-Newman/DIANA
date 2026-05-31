@@ -1,5 +1,5 @@
 const char busID = '1';
-String VERSION = "0.2";
+String VERSION = "0.3";
 
 /*
 Connected to main DIANA flight computer via serial connection
@@ -39,6 +39,7 @@ struct bno055_gyro gyro;
 
 bool working = true;
 unsigned long lastUpdate = 0;
+unsigned long lastRestart = 0;
 
 unsigned long freqTimer = 0;
 unsigned int numSamples = 0;
@@ -59,13 +60,15 @@ void setup() {
   Serial.begin(115200); // debug channel
   Serial1.begin(115200);
   Wire.begin();
+  delay(100);
   BNO_Init(&myBNO);
   bno055_set_operation_mode(OPERATION_MODE_NDOF);
   bno055_set_accel_unit(0); // ms^-2
   bno055_set_gyro_unit(0); // degrees/s
   bno055_set_tilt_unit(0); // degrees
-  delay(1000);
+  //delay(1000);
   lastUpdate = millis();
+  lastRestart = millis();
   freqTimer = millis();
 }
 
@@ -104,6 +107,8 @@ void loop() {
     }
   }
 
+  else {lastRestart = millis();}
+
 
 
   if (Serial1.available()){
@@ -115,12 +120,15 @@ void loop() {
     //Serial.write(cmd);
     //Serial.write('\n');
 
-    if (reqBus == busID){
+    if (reqBus == busID or reqBus == 255){
       //Serial.println("this IMC");
 
       if (cmd == 'r'){
         //Serial.println("read detected");
-        if (working) {
+        if (working and millis() - lastRestart < 10000) {
+          Serial1.write('2'); // waiting to stabilize
+        }
+        else if (working) {
           Serial1.write('1');
 
           Serial1.print(float(eulerData.p) / 16.00);
@@ -149,9 +157,10 @@ void loop() {
         }
       }
 
-      else if (cmd == 'f') {working = false;}
-      else if (cmd == 'w') {working = true;}
+      else if (cmd == '0') {working = false;}
+      else if (cmd == '1') {working = true;}
       else if (cmd == 'v') {Serial1.print(VERSION + "\n");}
+      else if (cmd == 'f') {setup();}
     }
   }
 }
