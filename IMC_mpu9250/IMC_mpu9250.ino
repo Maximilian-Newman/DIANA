@@ -40,6 +40,16 @@ unsigned long freqTimer = 0;
 unsigned int numSamples = 0;
 unsigned int lastSampleRate = 0;
 
+float accX = 0;
+float accY = 0;
+float accZ = 0;
+float gyroX = 0;
+float gyroY = 0;
+float gyroZ = 0;
+
+float ACC_DAMP_FACTOR = 0.8; // 0.0 to 1.0
+float GYRO_DAMP_FACTOR = 0.8;
+
 void setup() {
   Serial.begin(115200); // debug channel
   Serial1.begin(115200);
@@ -62,11 +72,23 @@ void loop() {
     if (mpu.update()) {
       lastUpdate = millis();
       numSamples += 1;
+
+      accX = ACC_DAMP_FACTOR * accX + (1 - ACC_DAMP_FACTOR) * mpu.getAccX();
+      accY = ACC_DAMP_FACTOR * accY + (1 - ACC_DAMP_FACTOR) * mpu.getAccY();
+      accZ = ACC_DAMP_FACTOR * accZ + (1 - ACC_DAMP_FACTOR) * mpu.getAccZ();
+      gyroX = GYRO_DAMP_FACTOR * gyroX + (1 - GYRO_DAMP_FACTOR) * mpu.getGyroX();
+      gyroY = GYRO_DAMP_FACTOR * gyroY + (1 - GYRO_DAMP_FACTOR) * mpu.getGyroY();
+      gyroZ = GYRO_DAMP_FACTOR * gyroZ + (1 - GYRO_DAMP_FACTOR) * mpu.getGyroZ();
     }
 
     else if (millis() - lastUpdate > 50){
       working = false;
-      //Serial1.println("EEEEEEEEEEE");
+      accX = 0;
+      accY = 0;
+      accZ = 0;
+      gyroX = 0;
+      gyroY = 0;
+      gyroZ = 0;
     }
 
 
