@@ -1,5 +1,5 @@
 const char busID = '0';
-String VERSION = "0.2";
+String VERSION = "0.3";
 
 /*
 Connected to main DIANA flight computer via serial connection
@@ -35,6 +35,7 @@ SOFTWARE.
 MPU9250 mpu;
 bool working = true;
 unsigned long lastUpdate = 0;
+unsigned long lastRestart = 0;
 
 unsigned long freqTimer = 0;
 unsigned int numSamples = 0;
@@ -54,16 +55,15 @@ void setup() {
   Serial.begin(115200); // debug channel
   Serial1.begin(115200);
   Wire.begin();
-  delay(2000);
-
-  mpu.verbose(false);
+  //delay(2000);
   
   if (!mpu.setup(0x68)) {
     working = false;
   }
   mpu.setMagneticDeclination(-14);
-  delay(1000);
+  //delay(1000);
   lastUpdate = millis();
+  lastRestart = millis();
   freqTimer = millis();
 }
 
@@ -101,6 +101,8 @@ void loop() {
     }
   }
 
+  else {lastRestart = millis();}
+
 
 
   if (Serial1.available()){
@@ -112,12 +114,15 @@ void loop() {
     //Serial.write(cmd);
     //Serial.write('\n');
 
-    if (reqBus == busID){
-      //Serial.println("this IMC");
+    if (reqBus == busID or reqBus == 255){
 
       if (cmd == 'r'){
-        //Serial.println("read detected");
-        if (working) {
+
+        if (working and millis() - lastRestart < 10000) {
+          Serial1.write('2'); // waiting to stabilize
+        }
+
+        else if (working) {
           Serial1.write('1');
 
           Serial1.print(mpu.getPitch());
@@ -146,9 +151,10 @@ void loop() {
         }
       }
 
-      else if (cmd == 'f') {working = false;}
-      else if (cmd == 'w') {working = true;}
+      else if (cmd == '0') {working = false;}
+      else if (cmd == '1') {working = true;}
       else if (cmd == 'v') {Serial1.print(VERSION + "\n");}
+      else if (cmd == 'f') {setup();}
     }
   }
 }
