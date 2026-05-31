@@ -25,11 +25,12 @@ SOFTWARE.
 
 
 
-String IMC_BUS_COMPATIBLE_VERSION = "0.2";
+String IMC_BUS_COMPATIBLE_VERSION = "0.3";
 
 byte numIMC = 0;
 char imcAddresses[] = {255, 255, 255, 255, 255}; // addr 255 is reserved for 'not connected'
 bool imcStatus[] = {false, false, false, false, false};
+unsigned long imcNextReattempt[] = {0, 0, 0, 0, 0}; // if recieved a 2 / not atabilized response
 float imcPitch[] = {0, 0, 0, 0, 0};
 float imcRoll[] = {0, 0, 0, 0, 0};
 float imcHeading[] = {0, 0, 0, 0, 0};
@@ -101,12 +102,18 @@ void setupIMCs() {
 void pollIMCs(){
   workingIMCs = 0;
   for (byte i=0; i<numIMC; i++){
+
+    if (imcNextReattempt[i] > 0 and imcNextReattempt[i] < millis()) {
+      imcStatus[i] = true; // attempt reconnect after timeout if  previously recieved a '2 / not stabilized' response
+      imcNextReattempt[i] = 0;
+    }
+
     if (imcStatus[i] == true) {
       while (Serial1.available()) {Serial1.read();}
       Serial1.write(imcAddresses[i]);
       Serial1.write('r');
       byte timeoutTimer = 0;
-      while (!Serial1.available() and timeoutTimer < 50) {
+      while (!Serial1.available() and timeoutTimer < 100) {
         delay(1);
         timeoutTimer += 1;
       }
@@ -124,6 +131,11 @@ void pollIMCs(){
         imcAccZ[i] = Serial1.readStringUntil(',').toFloat();
         imcSampleRate[i] = Serial1.readStringUntil('\n').toFloat();
         workingIMCs += 1;
+      }
+
+      else if (r == '2') {
+        imcStatus[i] = false;
+        imcNextReattempt[i] = millis() + 1000;
       }
       else {
         imcStatus[i] = false;
@@ -172,21 +184,43 @@ void mergeIMCs() {
 }
 
 void setup() {
-  delay(5000);
+  pinMode(19, INPUT_PULLUP);
+  delay(1000);
   Serial.begin(115200);
   Serial1.begin(115200);
+  Serial1.setTimeout(100); // avoid long blocks on readStringUntil() if communication is interrupted with IMC's
   setupIMCs();
 }
 
 void loop() {
+  if (Serial.available()) {
+    byte index = Serial.read() - '0';
+    byte instruct = Serial.read();
+    if (index < 5) {
+      if (instruct == '1') {
+        imcStatus[index] = true;
+      }
+      Serial1.write(imcAddresses[index]);
+      Serial1.write(instruct);
+    }
+  }
+
+
   delay(100);
   pollIMCs();
   mergeIMCs();
 
   Serial.print(imcSampleRate[0]);
   Serial.print(" ");
+  Serial.print(imcSampleRate[1]);
+  Serial.print("     ");
   Serial.print(pitch);
   Serial.print(" ");
+
+  Serial.print(imcPitch[0]);
+  Serial.print(" ");
+  Serial.print(imcPitch[1]);
+/*
   Serial.print(roll);
   Serial.print(" ");
   Serial.print(heading);
@@ -201,5 +235,8 @@ void loop() {
   Serial.print(" ");
   Serial.print(accY);
   Serial.print(" ");
-  Serial.println(accZ);
+  Serial.print(accZ);*/
+
+
+  Serial.println();
 }
