@@ -44,8 +44,9 @@ const unsigned int MAX_SPEED = 0; // needs to be configured
 // Servo limits
 const byte ELEVATOR_MIN = 60;
 const byte ELEVATOR_MAX = 165;
-const byte AILERON_MIN = 45;
-const byte AILERON_MAX = 135;
+const byte AILERON_OFFSET_R = 90;
+const byte AILERON_OFFSET_L = 90;
+const byte AILERON_MAX_DEFLECTION = 40;
 
 
 const unsigned int logInterval = 5000; // time between samples in flight data recorder
@@ -64,7 +65,8 @@ const unsigned int logInterval = 5000; // time between samples in flight data re
 #include <setjmp.h>
 
 Servo elevators;
-Servo ailerons;
+Servo aileronL;
+Servo aileronR;
 Servo leftMotor;
 Servo rightMotor;
 Servo sonarPitch;
@@ -95,7 +97,7 @@ int targetRoll = 0;
 unsigned int targetAltitude = 0;
 unsigned int targetSpeed = 0;
 unsigned int elevatorAngle = 90;
-unsigned int aileronAngle = 90;
+int aileronAngle = 0;
 int currentPitch = 0;
 int currentRoll = 0;
 int sideslipAcc = 0;
@@ -142,7 +144,7 @@ byte lastThrustL = 0;
 byte lastThrustR = 0;
 int lastHeight = 0;
 int yaw = 0;
-
+bool reducedRoll = false;
 int targetPitch = 0;
 float targetPitchRate = 0;
 float targetRollRate = 0;
@@ -394,6 +396,8 @@ void targetPitch_from_target_alt() {
 }
 
 void targetPitchRate_from_target_pitch() {
+  if (targetPitch > MAX_PITCH) {targetPitch = MAX_PITCH;}
+  if (targetPitch < -MAX_PITCH) {targetPitch = -MAX_PITCH;}
   targetPitchRate = targetPitch - currentPitch;
   if (targetPitchRate < -MAX_PITCH_RATE) {targetPitchRate = -MAX_PITCH_RATE;}
   if (targetPitchRate > MAX_PITCH_RATE) {targetPitchRate = MAX_PITCH_RATE;}
@@ -405,6 +409,33 @@ void elevators_from_targetPitchRate() {
 
   if (elevatorAngle < ELEVATOR_MIN) {elevatorAngle = ELEVATOR_MIN;}
   if (elevatorAngle > ELEVATOR_MAX) {elevatorAngle = ELEVATOR_MAX;}
+}
+
+
+
+void targetRoll_from_targetHeading() {
+  int diff = targetHeading - currentHeading;
+  if (diff < -180) {diff += 360;}
+  else if (diff > 180) {diff -= 360;}
+  targetRoll = 2*diff;
+  if (targetRoll > MAX_ROLL) {targetRoll = MAX_ROLL;}
+  if (targetRoll < -MAX_ROLL) {targetRoll = -MAX_ROLL;}
+}
+
+void targetRollRate_from_targetRoll() {
+  if (targetRoll > MAX_ROLL) {targetRoll = MAX_ROLL;}
+  if (targetRoll < -MAX_ROLL) {targetRoll = -MAX_ROLL;}
+  targetRollRate = targetRoll - currentRoll;
+  if (targetRollRate > MAX_ROLL_RATE) {targetRollRate = MAX_ROLL_RATE;}
+  if (targetRollRate < -MAX_ROLL_RATE) {targetRollRate = -MAX_ROLL_RATE;}
+}
+
+void ailerons_from_targetRollRate() {
+  if (targetRollRate > currentRollRate) {aileronAngle += 1;}
+  else if (targetRollRate < currentRollRate) {aileronAngle -= 1;}
+
+  if (aileronAngle > AILERON_MAX_DEFLECTION) {aileronAngle = AILERON_MAX_DEFLECTION;}
+  if (aileronAngle < -AILERON_MAX_DEFLECTION) {aileronAngle = -AILERON_MAX_DEFLECTION;}
 }
 
 
@@ -424,24 +455,39 @@ void pitch_protections() {
   if (currentAirspeed < STALL_SPEED) {
     reducedRoll = true;
     thrust = MAX_THRUST;
-    thrustToTargetSpeed = false;
     targetPitch = -MAX_PITCH;
-    gotoTargetPitch = true;
-  }
-  else if (currentAirspeed < STALL_SPEED * 1.4 and modeV != "FLARE" and modeV != "ILS") {
-    reducedRoll = true;
-    targetSpeed = STALL_SPEED * 1.4;
-    thrustToTargetSpeed = true;
+    targetPitchRate_from_target_pitch();
+    elevators_from_targetPitchRate();
   }
 
   else if (currentAirspeed > MAX_SPEED) {
     thrust = 0;
-    thrustToTargetSpeed = false;
   }
 }
 
 
-
+void roll_protections() {
+  if (reducedRoll and currentRoll > MAX_ROLL_REDUCED * 1.1) {
+    targetRoll = 0.9 * MAX_ROLL_REDUCED;
+    targetRollRate_from_targetRoll();
+    ailerons_from_targetRollRate();
+  }
+  else if (reducedRoll and currentRoll < -MAX_ROLL_REDUCED * 1.1) {
+    targetRoll = -0.9 * MAX_ROLL_REDUCED;
+    targetRollRate_from_targetRoll();
+    ailerons_from_targetRollRate();
+  }
+  else if (currentRoll > MAX_ROLL * 1.1) {
+    targetRoll = 0.9 * MAX_ROLL;
+    targetRollRate_from_targetRoll();
+    ailerons_from_targetRollRate();
+  }
+  else if (currentRoll < -MAX_ROLL * 1.1) {
+    targetRoll = -0.9 * MAX_ROLL;
+    targetRollRate_from_targetRoll();
+    ailerons_from_targetRollRate();
+  }
+}
 
 
 
@@ -460,12 +506,13 @@ void setup() {
   Serial2.begin(115200); // arduino nano connected to pitot tube
   Serial3.begin(9600); // GPS
   Wire.begin();
-  IrReceiver.begin(7);
-  elevators.attach(8);
-  ailerons.attach(23);
-  leftMotor.attach(48);
-  rightMotor.attach(49);
-  sonarPitch.attach(45);
+  //IrReceiver.begin(7);
+  //elevators.attach(8);
+  //aileronL.attach(23);
+  //aileronR.attach();
+  //leftMotor.attach(48);
+  //rightMotor.attach(49);
+  //sonarPitch.attach(45);
 
   pinMode(sonarTrigPin, OUTPUT);
   pinMode(sonarEchoPin, INPUT);
@@ -473,7 +520,8 @@ void setup() {
   leftMotor.write(0);
   rightMotor.write(0);
   elevators.write(90);
-  ailerons.write(90);
+  aileronL.write(90);
+  aileronR.write(90);
 
 
 
@@ -546,7 +594,7 @@ void loop() {
 
   unsigned long t = millis();
   
-  String dataBraudcast = "mode: " + modeV + " / " + modeH;
+  String dataBraudcast = "mode: " + String(modeV) + " / " + String(modeH);
 
   String command1 = "";
   String command2 = "";
@@ -719,7 +767,7 @@ void loop() {
   update_gyro();
   update_GPS();
 
-  bool reducedRoll = false;
+  reducedRoll = false;
   double currentLongitude = gps.location.lng();
   double currentLattitude = gps.location.lat();
   currentHeading = get_heading();
@@ -731,19 +779,19 @@ void loop() {
   int yawcont = readChannel(yawChannel, -10, 10, 0);
   if (yawcont <= -9) {
     modeV = MODE_MAN_FULL;
-    modeR = MODE_MAN_FULL;
+    modeH = MODE_MAN_FULL;
     modeY = MODE_MAN_FULL;
     modeT = MODE_MAN_FULL;
   }
   if (yawcont >= 9 and modeV != MODE_MAN_FULL) {
     modeV = MODE_MAN_PROT;
-    modeR = MODE_MAN_PROT;
+    modeH = MODE_MAN_PROT;
     modeT = MODE_MAN_PROT;
   }
 
   if (modeY == MODE_YAW_ACC) {
     if (gyroWorking) {
-      if (sideslipAcc > 0) {autoYaw += 1;}
+      if (sideslipAcc > 0) {yaw += 1;}
       else {yaw -= 1;}
     }
 
@@ -780,12 +828,12 @@ void loop() {
   if (modeV == MODE_GROUND) {
     dataBraudcast += "   Conditions: " + String(conditionsCat) + "   GPS: " + String(gps.satellites.value()) + "   height: " + String(height) + "   QFE: " + groundPressure + "   static press: " + String(staticPressure) + "   alt: " + String(currentAltitude);
     elevatorAngle = 90;
-    aileronAngle = 90;
+    aileronAngle = 0;
     thrust = 0;
   }
 
     
- if (modeV == MODE_MAN_RATE) {
+ if (modeV == MODE_MAN_RATES) {
     targetPitchRate = readChannel(pitchChannel, -MAX_PITCH_RATE, MAX_PITCH_RATE, 0);
     elevators_from_targetPitchRate();
     pitch_protections();
@@ -971,105 +1019,11 @@ void loop() {
 
 
 
-  if (gotoTargetAlt) {
-    targetPitch = rescale(targetAltitude - currentAltitude, -10, 10, -MAX_PITCH, MAX_PITCH);
-    gotoTargetPitch = true;
-  }
-  if (gotoTargetHeading) {
-    gotoTargetRoll = true;
-    int diff = targetHeading - currentHeading;
-    if (diff < -180) {diff += 360;}
-    else if (diff > 180) {diff -= 360;}
-    targetRoll = rescale(diff, -5, 5, -MAX_ROLL, MAX_ROLL);
-  }
-
-
-  // emergency protections
-  if (modeV != "MAN FULL" and modeV != "GROUND") {
-    if (currentPitch > MAX_PITCH * 1.1) {
-      targetPitch = 0.9 * MAX_PITCH;
-      gotoTargetPitch = true;
-    }
-    if (currentPitch < -MAX_PITCH * 1.1) {
-      targetPitch = -0.9 * MAX_PITCH;
-      gotoTargetPitch = true;
-    }
-
-
-    if (currentAirspeed < STALL_SPEED) {
-      reducedRoll = true;
-      thrust = MAX_THRUST;
-      thrustToTargetSpeed = false;
-      targetPitch = -MAX_PITCH;
-      gotoTargetPitch = true;
-    }
-    else if (currentAirspeed < STALL_SPEED * 1.4 and modeV != "FLARE" and modeV != "ILS") {
-      reducedRoll = true;
-      targetSpeed = STALL_SPEED * 1.4;
-      thrustToTargetSpeed = true;
-    }
-
-    else if (currentAirspeed > MAX_SPEED) {
-      thrust = 0;
-      thrustToTargetSpeed = false;
-    }
-
-    //if (modeV != "FLARE" and modeV != "ILS" and modeV != "CLIMB" and ( (height < 390 and modeV.startsWith("MAN") == false) or height < 150 )) {
-    //  braudcast(F("Terrain escape"), true);
-    //  set_mode("CLIMB");
-    //}
-
-    if (reducedRoll and currentRoll > MAX_ROLL_REDUCED * 1.1) {
-      targetRoll = 0.9 * MAX_ROLL_REDUCED;
-      gotoTargetRoll = true;
-    }
-    else if (reducedRoll and currentRoll < -MAX_ROLL_REDUCED * 1.1) {
-      targetRoll = -0.9 * MAX_ROLL_REDUCED;
-      gotoTargetRoll = true;
-    }
-    else if (currentRoll > MAX_ROLL * 1.1) {
-      targetRoll = 0.9 * MAX_ROLL;
-      gotoTargetRoll = true;
-    }
-    else if (currentRoll < -MAX_ROLL * 1.1) {
-      targetRoll = -0.9 * MAX_ROLL;
-      gotoTargetRoll = true;
-    }
-  }
-
-
-  
-  if (gotoTargetPitch) {
-    gotoTargetPitchRate = true;
-    if (targetPitch > MAX_PITCH) {targetPitch = MAX_PITCH;}
-    if (targetPitch < -MAX_PITCH) {targetPitch = -MAX_PITCH;}
-    targetPitchRate = rescale(targetPitch - currentPitch, -10, 10, -MAX_PITCH_RATE, MAX_PITCH_RATE);
-  }
-
-  if (gotoTargetRoll) {
-    gotoTargetRollRate = true;
-    if (targetRoll > MAX_ROLL) {targetRoll = MAX_ROLL;}
-    if (targetRoll < -MAX_ROLL) {targetRoll = -MAX_ROLL;}
-    targetRollRate = rescale(targetRoll - currentRoll, -10, 10, -MAX_ROLL_RATE, MAX_ROLL_RATE);
-  }
 
 
 
 
 
-  if (gotoTargetPitchRate) {
-    if (targetPitchRate > MAX_PITCH_RATE) {targetPitchRate = MAX_PITCH_RATE;}
-    if (targetPitchRate < -MAX_PITCH_RATE) {targetPitchRate = -MAX_PITCH_RATE;}
-    elevatorAngle += rescale((targetPitchRate - currentPitchRate) *10, -MAX_PITCH_RATE*10, MAX_PITCH_RATE*10, -ELEVATOR_MAX/10, ELEVATOR_MAX/10);
-    //if (targetPitchRate > currentPitchRate) {elevatorAngle += 1;}
-    //else {elevatorAngle -= 1;}
-  }
-
-  if (gotoTargetRollRate) {
-    if (targetRollRate > MAX_ROLL_RATE) {targetRollRate = MAX_ROLL_RATE;}
-    if (targetRollRate < -MAX_ROLL_RATE) {targetRollRate = -MAX_ROLL_RATE;}
-    aileronAngle += rescale((targetRollRate - currentRollRate) *10, -MAX_ROLL_RATE*10, MAX_ROLL_RATE*10, -AILERON_MAX/10, AILERON_MAX/10);
-  }
 
 
 
@@ -1084,8 +1038,8 @@ void loop() {
   if (elevatorAngle < ELEVATOR_MIN) {elevatorAngle = ELEVATOR_MIN;}
   if (elevatorAngle > ELEVATOR_MAX) {elevatorAngle = ELEVATOR_MAX;}
 
-  if (aileronAngle < AILERON_MIN) {aileronAngle = AILERON_MIN;}
-  if (aileronAngle > AILERON_MAX) {aileronAngle = AILERON_MAX;}
+  if (aileronAngle < -AILERON_MAX_DEFLECTION) {aileronAngle = -AILERON_MAX_DEFLECTION;}
+  if (aileronAngle > AILERON_MAX_DEFLECTION) {aileronAngle = AILERON_MAX_DEFLECTION;}
 
   if (yaw < 5 and yaw > -5) {yaw = 0;}
 
@@ -1147,7 +1101,9 @@ void loop() {
 
 
   elevators.write(elevatorAngle);
-  ailerons.write(aileronAngle);
+  aileronL.write(aileronAngle + AILERON_OFFSET_L);
+  aileronR.write(aileronAngle + AILERON_OFFSET_R);
+
   if (!inESCReset) {
     leftMotor.write(thrustL);
     rightMotor.write(thrustR);
