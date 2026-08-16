@@ -34,12 +34,12 @@ const byte MAX_ROLL_REDUCED = 10; // max roll during certain critical modes of f
 const byte MAX_YAW = 25;
 const unsigned int STALL_SPEED = 0; // not known yet
 const unsigned int MAX_SPEED = 0; // needs to be configured
-#define APPROACH_ANGLE -3 // angle to follow when on ILS approach
-#define MAX_THRUST_CHANGE_RATE 0.04 // limit increases in thrust to avoid stalling motors
-#define MAX_THRUST 100 // maximum thrust to allow (technical maximum is 180, but can't be sustained without damaging the batteries)
+const int APPROACH_ANGLE = -3; // angle to follow when on ILS approach
+const float MAX_THRUST_CHANGE_RATE = 0.04; // limit increases in thrust to avoid stalling motors
+const byte MAX_THRUST = 100; // maximum thrust to allow (technical maximum is 180, but can't be sustained without damaging the batteries)
 
-#define GROUND_HEIGHT 20 // height measured when on the ground
-#define PITOT_DIFF_TOLERANCE 4 // to be adjusted, maximum difference in dynamic pressure in kPa readings to allow before dissactivating
+const byte GROUND_HEIGHT = 20; // height measured when on the ground
+const byte PITOT_DIFF_TOLERANCE = 4; // to be adjusted, maximum difference in dynamic pressure in kPa readings to allow before dissactivating
 
 // Servo limits
 const byte ELEVATOR_MIN = 60;
@@ -83,9 +83,14 @@ const byte MODE_MAN_PROT = 2;
 const byte MODE_MAN_RATES = 3;
 const byte MODE_ANGLE_HOLD = 4;
 const byte MODE_ALTITUDE_HOLD = 5;
+const byte MODE_HEADING_HOLD = 5;
+const byte MODE_THRUST_SPEED_HOLD = 5;
 const byte MODE_OPEN_CLIMB = 6;
 const byte MODE_YAW_ACC = 7;
 const byte MODE_YAW_VANE = 8;
+const byte MODE_GPS_WAYPOINT = 9;
+const byte MODE_ILS = 10;
+const byte MODE_FLARE = 11;
 
 byte modeV = MODE_GROUND; // vertical
 byte modeH = MODE_GROUND; // roll
@@ -330,54 +335,6 @@ void start_data_recorder() {
 
 
 
-void set_mode(String newMode) {
-  Serial.println(newMode);
-
-  if (newMode == "HOLD") {
-    targetHeading = currentHeading;
-    targetAltitude = currentAltitude;
-    modeV = "HOLD";
-    modeH = "HOLD";
-  }
-  else if (newMode == "FLARE"){
-    flareStartTime = millis();
-    targetHeading = runwayHeading;
-    modeV = "FLARE";
-    modeH = "HOLD";
-  }
-  else if (newMode == "GROUND") {
-    modeV = "GROUND";
-    modeH = "GROUND";
-  }
-  else if (newMode == "MAN FULL") {
-    modeV = "MAN FULL";
-    modeH = "MAN FULL";
-  }
-  else if (newMode == "MAN PROT") {
-    modeV = "MAN PROT";
-    modeH = "MAN PROT";
-  }
-  else if (newMode == "MAN RATE") {
-    modeV = "MAN RATE";
-    modeH = "MAN RATE";
-  }
-  else if (newMode == "MAN SIMP") {
-    modeV = "MAN SIMP";
-    modeH = "MAN SIMP";
-  }
-  else if (newMode == "WAYPT") {
-    targetAltitude = currentAltitude;
-    modeV = "HOLD";
-    modeH = "WAYPT";
-  }
-  else {
-    braudcast("ERROR: invalid mode change to '" + newMode +"'", true);
-  }
-
-  if (newMode != "GROUND") {
-    start_data_recorder();
-  }
-}
 
 
 
@@ -389,13 +346,14 @@ void set_mode(String newMode) {
 
 
 
-void targetPitch_from_target_alt() {
+
+void targetPitch_from_targetAltitude() {
   targetPitch = targetAltitude - currentAltitude;
   if (targetPitch < -MAX_PITCH) {targetPitch = -MAX_PITCH;}
   if (targetPitch > MAX_PITCH) {targetPitch = MAX_PITCH;}
 }
 
-void targetPitchRate_from_target_pitch() {
+void targetPitchRate_from_targetPitch() {
   if (targetPitch > MAX_PITCH) {targetPitch = MAX_PITCH;}
   if (targetPitch < -MAX_PITCH) {targetPitch = -MAX_PITCH;}
   targetPitchRate = targetPitch - currentPitch;
@@ -403,7 +361,7 @@ void targetPitchRate_from_target_pitch() {
   if (targetPitchRate > MAX_PITCH_RATE) {targetPitchRate = MAX_PITCH_RATE;}
 }
 
-void elevators_from_targetPitchRate() {
+void elevator_from_targetPitchRate() {
   if (targetPitchRate > currentPitchRate) {elevatorAngle += 1;}
   if (targetPitchRate < currentPitchRate) {elevatorAngle -= 1;}
 
@@ -442,13 +400,13 @@ void ailerons_from_targetRollRate() {
 void pitch_protections() {
   if (currentPitch > MAX_PITCH * 1.1) {
     targetPitch = 0.9 * MAX_PITCH;
-    targetPitchRate_from_target_pitch();
-    elevators_from_targetPitchRate();
+    targetPitchRate_from_targetPitch();
+    elevator_from_targetPitchRate();
   }
   if (currentPitch < -MAX_PITCH * 1.1) {
     targetPitch = -0.9 * MAX_PITCH;
-    targetPitchRate_from_target_pitch();
-    elevators_from_targetPitchRate();
+    targetPitchRate_from_targetPitch();
+    elevator_from_targetPitchRate();
   }
 
 
@@ -456,8 +414,8 @@ void pitch_protections() {
     reducedRoll = true;
     thrust = MAX_THRUST;
     targetPitch = -MAX_PITCH;
-    targetPitchRate_from_target_pitch();
-    elevators_from_targetPitchRate();
+    targetPitchRate_from_targetPitch();
+    elevator_from_targetPitchRate();
   }
 
   else if (currentAirspeed > MAX_SPEED) {
@@ -489,7 +447,15 @@ void roll_protections() {
   }
 }
 
+void go_around() {
+  modeV = MODE_OPEN_CLIMB;
+  modeH = MODE_ANGLE_HOLD;
+  modeT = MODE_OPEN_CLIMB;
+  targetRoll = 0;
 
+  if (groundAltitudeKnown) {targetAltitude = groundAltitude + 30;}
+  else {targetAltitude = currentAltitude + 30;}
+}
 
 
 
@@ -614,9 +580,10 @@ void loop() {
   }
   
   if (command1 != "") {
-    if (command1 == "SM") {set_mode(command2);}
-    if (command1 == "SMV") {modeV = command2;}
-    if (command1 == "SMH") {modeH = command2;}
+    if (command1 == "SMV") {modeV = command2.toInt();}
+    if (command1 == "SMH") {modeH = command2.toInt();}
+    if (command1 == "SMY") {modeH = command2.toInt();}
+    if (command1 == "SMT") {modeH = command2.toInt();}
 
     if (command1 == "TH") {
       int target = command2.toInt();
@@ -635,25 +602,6 @@ void loop() {
       }
       else {
         braudcast("Couldn't change target altitude to: " + command2, true);
-      }
-    }
-
-    if (command1 == "WAYPT") {
-      if (File waypointFile = SD.open("DIANA/WAYPTS/" + command2, FILE_READ)) {
-        command2 = waypointFile.readString();
-        waypointFile.close();
-      }
-      float longitude = command2.substring(0, command2.indexOf(',')).toFloat();
-      command2.remove(0, command2.indexOf(','));
-      float lattitude = command2.substring(0, command2.indexOf(',')).toFloat();
-      command2.remove(0, command2.indexOf(','));
-      float altitude = command2.toFloat();
-      
-      if (altitude > 0) {
-        targetLongitude = longitude;
-        targetLattitude = lattitude;
-        targetAltitude = altitude;
-        set_mode("WAYPT");
       }
     }
 
@@ -835,7 +783,7 @@ void loop() {
     
  if (modeV == MODE_MAN_RATES) {
     targetPitchRate = readChannel(pitchChannel, -MAX_PITCH_RATE, MAX_PITCH_RATE, 0);
-    elevators_from_targetPitchRate();
+    elevator_from_targetPitchRate();
     pitch_protections();
   }
 
@@ -851,7 +799,6 @@ void loop() {
 
   if (modeV == MODE_ALTITUDE_HOLD) {
     dataBraudcast += "   target ALT: " + String(targetAltitude) + "   ALT: " + String(currentAltitude);
-    gotoTargetAlt = true;
     int input = readChannel(pitchChannel, -30, 30, 0);
     if (input > 10) {
       targetAltitude -= 1;
@@ -861,11 +808,14 @@ void loop() {
       targetAltitude += 1;
       braudcast("target ALT: " + String(targetAltitude), false, true);
     }
+
+    targetPitch_from_targetAltitude();
+    targetPitchRate_from_targetPitch();
+    elevator_from_targetPitchRate();
   }
 
-  if (modeH == "HOLD") {
+  if (modeH == MODE_HEADING_HOLD) {
     dataBraudcast += "   target HDG: " + String(targetHeading) + "   HDG: " + String(currentHeading);
-    gotoTargetHeading = true;
 
     int input = readChannel(rollChannel, -30, 30, 0);
     if (input > 10) {
@@ -879,49 +829,47 @@ void loop() {
 
     if (targetHeading >= 360) {targetHeading -= 360;}
     if (targetHeading < 0) {targetHeading += 360;}
-    if (conditionsCat < 2) {modeH = "LVL";} // no set_mode() function, because vertical mode should be left unaffected
+
+    targetRoll_from_targetHeading();
+    targetRollRate_from_targetRoll();
+    ailerons_from_targetRollRate();
   }
 
-  if (modeH == "LVL") {
-    gotoTargetRoll = true;
-    targetRoll = 0;
-    if (conditionsCat < 1) {set_mode("MAN FULL");}
-    if (conditionsCat > 1) {
-      modeH = "HOLD"; // no set_mode() function, because vertical mode should be left unaffected
-      targetHeading = currentHeading;
-    }
+  if (modeH == MODE_ANGLE_HOLD) {
+    targetRollRate_from_targetRoll();
+    ailerons_from_targetRollRate();
   }
 
-  if (modeV == "CLIMB") {
-    dataBraudcast += "   speed: " + String(currentAirspeed) + "   target ALT: " + String(targetAltitude) + "   ALT: " + String(currentAltitude);
-    reducedRoll = true;
-    gotoTargetAlt = false;
+  if (modeV == MODE_OPEN_CLIMB) {
     if (currentPitch < 3) {
-      targetPitch = 3;
+      targetPitch = 4;
+      targetPitchRate_from_targetPitch();
     }
     else {
-      gotoTargetPitch = false;
-      gotoTargetPitchRate = true;
-      targetPitchRate = rescale(currentAirspeed - STALL_SPEED*1.5, -10, 10, -MAX_PITCH_RATE, MAX_PITCH_RATE);
+      targetPitchRate = currentAirspeed - STALL_SPEED*1.5;
+      if (targetPitchRate > MAX_PITCH_RATE) {targetPitchRate = MAX_PITCH_RATE;}
+      if (targetPitchRate < -MAX_PITCH_RATE) {targetPitchRate = -MAX_PITCH_RATE;}
     }
-    thrust = MAX_THRUST;
-    if (conditionsCat < 1) {set_mode("MAN FULL");}
+    elevator_from_targetPitchRate();
+    modeT = MODE_OPEN_CLIMB;
   }
 
-  if (modeH == "WAYPT") {
+  if (modeH == MODE_GPS_WAYPOINT) {
     dataBraudcast += "target long: " + String(targetLongitude) + "   target latt: " + String(targetLattitude) + "   target HDG: " + String(targetHeading) + "   HDG: " + String(currentHeading);
 
-    gotoTargetHeading = true;
     float d_latt = targetLattitude - currentLattitude;
     float d_long = targetLongitude - currentLongitude;
     targetHeading = tan(d_long/d_latt) * 180/PI;
     if (d_long > 0 and d_latt < 0) {targetHeading += 90;}
     if (d_long < 0 and d_latt < 0) {targetHeading -= 180;}
     if (d_long < 0 and d_latt > 0) {targetHeading -= 90;}
+
+    targetRoll_from_targetHeading();
+    targetRollRate_from_targetRoll();
+    ailerons_from_targetRollRate();
   }
 
-  if (modeV == "ILS") {
-    thrustToTargetSpeed = true;
+  if (modeV == MODE_ILS) {
     if (height > 300){targetSpeed = STALL_SPEED * 1.5;}
     else{targetSpeed = STALL_SPEED*1.1;}
 
@@ -930,65 +878,69 @@ void loop() {
     else if (capturedILS[1]) {targetPitch = APPROACH_ANGLE + 5;}
     else {
       braudcast(F("Go-around initiated, reason: lost glideslope"), true);
-      set_mode("CLIMB");
+      go_around();
     }
 
     if (capturedILS[4]) {
       if (height > 150) {
         braudcast(F("Go-around initiated, reason: too high at threshold"), true);
-        set_mode("CLIMB");
+        go_around();
       }
       else {
-        set_mode("FLARE");
+        modeV = MODE_FLARE;
+        modeH = MODE_ANGLE_HOLD;
+        targetRoll = 0;
+        modeT = MODE_FLARE;
+        modeY = MODE_FLARE;
       }
     }
 
     if (height < 350 and modeH != "ILS") {
       braudcast(F("Go-Around, reason: localiser not intercepted"), true);
-      set_mode("CLIMB");
+      go_around();
     }
 
     if (height < 100) {
       braudcast(F("Go-Around, reason: threshold beacon not found"), true);
-      set_mode("CLIMB");
+      go_around();
     }
-
-    if (conditionsCat < 2) {set_mode("MAN PROT");}
   }
 
-  if (modeH == "ILS") {
-    gotoTargetHeading = true;
+  if (modeH == MODE_ILS) {
+    targetRoll_from_targetHeading();
+    targetRollRate_from_targetRoll();
+    ailerons_from_targetRollRate();
 
     if (capturedILS[2] and capturedILS[3]) {targetHeading = runwayHeading;}
     else if (capturedILS[2]) {targetHeading = runwayHeading - 5;}
     else if (capturedILS[3]) {targetHeading = runwayHeading + 5;}
     else {
       braudcast(F("Go-around, reason: lost localiser"), true);
-      set_mode("CLIMB");
+      go_around();
     }
 
-    if (height < 350 and modeV != "ILS") {
+    if (height < 350 and modeV != MODE_ILS) {
       braudcast(F("Go-Around, reason: glideslope not intercepted"), true);
-      set_mode("CLIMB");
+      go_around();
     }
-
-    if (conditionsCat < 2) {set_mode("MAN PROT");}
   }
 
-  if (modeV == "FLARE") {
+  if (modeV == MODE_FLARE) {
     reducedRoll = true;
     thrust = 0;
     targetPitch = 5; // to be adjusted after test flights
-    if (millis() - flareStartTime > 5) {
-      braudcast(F("Go-around initiated, reason: 5 second rule"), true);
-      set_mode("CLIMB");
+    if (millis() - flareStartTime > 5000) {
+      braudcast(F("Go-around initiated, reason: 5 second flare rule"), true);
+      go_around();
     }
     if (height <= GROUND_HEIGHT) {
-      set_mode("GROUND");
+      modeV = MODE_GROUND;
+      modeH = MODE_GROUND;
+      modeY = MODE_GROUND;
+      modeT = MODE_GROUND;
     }
 
-    if (conditionsCat < 2) {set_mode("MAN FULL");}
-    if (readChannel(thrustChannel, 0, 100, 0) > 90) {set_mode("CLIMB");}
+    if (readChannel(thrustChannel, 0, 100, 0) > 90) {go_around();}
   }
 
 
@@ -1028,7 +980,7 @@ void loop() {
 
 
 
-  if (thrustToTargetSpeed) {
+  if (modeT == MODE_THRUST_SPEED_HOLD) {
     if (targetSpeed > currentAirspeed and thrust < MAX_THRUST) {thrust += 1;}
     else if (thrust > 0) {thrust -= 1;}
   }
