@@ -126,6 +126,7 @@ const unsigned int ILS_TIMEOUT = 800;
 #define numILSBeacons 5
 unsigned long lastSeenILS[numILSBeacons];
 bool capturedILS[numILSBeacons];
+bool ILS_intercept_trigger = false; // when true, will switch to ILS mode once intercepted
 bool MotorOn = false;
 bool inESCReset = false;
 unsigned long flareStartTime = 0;
@@ -410,6 +411,10 @@ void roll_protections() {
     targetRollRate_from_targetRoll();
     ailerons_from_targetRollRate();
   }
+
+  if (currentAirspeed < STALL_SPEED) {
+    aileronAngle = 0; // avoid turning the stall into a spin
+  }
 }
 
 void go_around() {
@@ -626,7 +631,11 @@ void loop() {
 
 
 
-
+  if (ILS_intercept_trigger) {
+    if (capturedILS[0] or capturedILS[1]) {modeV = MODE_ILS;}
+    if (capturedILS[2] or capturedILS[3]) {modeH = MODE_ILS;}
+    if (modeV == MODE_ILS and modeH == MODE_ILS) {ILS_intercept_trigger = false;}
+  }
 
 
   
@@ -641,54 +650,87 @@ void loop() {
   }
 
     
- if (modeV == MODE_MAN_RATES) {
-    targetPitchRate = readChannel(pitchChannel, -MAX_PITCH_RATE, MAX_PITCH_RATE, 0);
-    elevator_from_targetPitchRate();
-    pitch_protections();
+  if (modeV == MODE_MAN_RATES) {
+    if (gyroIsValid) {
+      targetPitchRate = readChannel(pitchChannel, -MAX_PITCH_RATE, MAX_PITCH_RATE, 0);
+      elevator_from_targetPitchRate();
+      pitch_protections();
+    }
+    else {modeV = MODE_MAN_FULL;}
   }
 
   if (modeV == MODE_MAN_PROT) {
-    elevatorAngle = readChannel(pitchChannel, ELEVATOR_MIN, ELEVATOR_MAX, 90);
-    pitch_protections();
-  }
-
-  if (modeV == MODE_MAN_FULL) {
-    elevatorAngle = readChannel(pitchChannel, ELEVATOR_MIN, ELEVATOR_MAX, 90);
+    if (gyroIsValid) {
+      elevatorAngle = readChannel(pitchChannel, ELEVATOR_MIN, ELEVATOR_MAX, 90);
+      pitch_protections();
+    }
+    else {modeV = MODE_MAN_FULL;}
   }
 
 
   if (modeV == MODE_ALTITUDE_HOLD) {
-    int input = readChannel(pitchChannel, -30, 30, 0);
-    if (input > 20) {
-      targetAltitude -= 1;
-    }
-    else if (input < -20) {
-      targetAltitude += 1;
-    }
+    if (gyroIsValid and gpsIsValid) {
+      int input = readChannel(pitchChannel, -30, 30, 0);
+      if (input > 20) {
+        targetAltitude -= 1;
+      }
+      else if (input < -20) {
+        targetAltitude += 1;
+      }
 
-    targetPitch_from_targetAltitude();
-    targetPitchRate_from_targetPitch();
-    elevator_from_targetPitchRate();
+      targetPitch_from_targetAltitude();
+      targetPitchRate_from_targetPitch();
+      elevator_from_targetPitchRate();
+      pitch_protections();
+    }
+    else if (gyroIsValid) {
+      modeV = MODE_ANGLE_HOLD;
+      targetPitch = 3;
+    }
+    else {modeV = MODE_MAN_FULL;}
+  }
+
+
+  if (modeV == MODE_ANGLE_HOLD) {
+    if (gyroIsValid) {
+      targetPitchRate_from_targetPitch();
+      elevator_from_targetPitchRate();
+      pitch_protections();
+    }
+    else{
+      modeV = MODE_MAN_FULL;
+    }
   }
 
 
   if (modeV == MODE_OPEN_CLIMB) {
-    if (currentPitch < 3) {
-      targetPitch = 4;
-      targetPitchRate_from_targetPitch();
+    if (gyroIsValid and gpsIsValid) {
+      if (currentPitch < 3) {
+        targetPitch = 4;
+        targetPitchRate_from_targetPitch();
+      }
+      else {
+        targetPitchRate = currentAirspeed - targetSpeed;
+        if (targetPitchRate > MAX_PITCH_RATE) {targetPitchRate = MAX_PITCH_RATE;}
+        if (targetPitchRate < -MAX_PITCH_RATE) {targetPitchRate = -MAX_PITCH_RATE;}
+      }
+      elevator_from_targetPitchRate();
+      pitch_protections();
+      modeT = MODE_OPEN_CLIMB;
+
+      if (targetAltitude < currentAltitude + 1) {
+        modeV = MODE_ALTITUDE_HOLD;
+        modeT = MODE_THRUST_SPEED_HOLD;
+      }
     }
     else {
-      targetPitchRate = currentAirspeed - targetSpeed;
-      if (targetPitchRate > MAX_PITCH_RATE) {targetPitchRate = MAX_PITCH_RATE;}
-      if (targetPitchRate < -MAX_PITCH_RATE) {targetPitchRate = -MAX_PITCH_RATE;}
+      modeV = MODE_MAN_FULL;
+      modeT = MODE_MAN_FULL;
     }
-    elevator_from_targetPitchRate();
-    modeT = MODE_OPEN_CLIMB;
   }
 
 
-
-  if (modeV == MODE_ILS) {
+  if (modeV == MODE_ILS) {                                        // to-do: re-write ILS code to do 'pitch for speed, thrust for pitch'
     if (height > 300){targetSpeed = STALL_SPEED * 1.5;}
     else{targetSpeed = STALL_SPEED*1.1;}
 
@@ -728,27 +770,38 @@ void loop() {
 
 
   if (modeV == MODE_FLARE) {
-    modeH = MODE_ANGLE_HOLD;
-    targetRoll = 0;
-    modeY = MODE_FLARE;
-    modeT = MODE_GROUND;
-
-    targetPitch = 5; // to be adjusted after test flights
-    if (millis() - flareStartTime > 5000) {
-      //braudcast(F("Go-around initiated, reason: >5 second flare"), true);
-      go_around();
-    }
-    if (height <= GROUND_HEIGHT) {
-      modeV = MODE_GROUND;
-      modeH = MODE_GROUND;
-      modeY = MODE_GROUND;
+    if (gyroIsValid) {
+      modeH = MODE_ANGLE_HOLD;
+      targetRoll = 0;
+      modeY = MODE_FLARE;
       modeT = MODE_GROUND;
-    }
 
-    if (readChannel(thrustChannel, 0, 100, 0) > 90) {
-      go_around();
-      //braudcast: manual go-around triggered
+      targetPitch = 5; // to be adjusted after test flights
+      targetPitchRate_from_targetPitch();
+      elevator_from_targetPitchRate();
+
+      if (millis() - flareStartTime > 5000) {
+        //braudcast(F("Go-around initiated, reason: >5 second flare"), true);
+        go_around();
+      }
+      if (height <= GROUND_HEIGHT) {
+        modeV = MODE_GROUND;
+        modeH = MODE_GROUND;
+        modeY = MODE_GROUND;
+        modeT = MODE_GROUND;
+      }
+
+      if (readChannel(thrustChannel, 0, 100, 0) > 90) {
+        go_around();
+        //braudcast: manual go-around triggered
+      }
     }
+    else {modeV = MODE_MAN_FULL;}
+  }
+
+
+  if (modeV == MODE_MAN_FULL) {
+    elevatorAngle = readChannel(pitchChannel, ELEVATOR_MIN, ELEVATOR_MAX, 90);
   }
 
 
@@ -773,6 +826,7 @@ void loop() {
       targetRoll_from_targetHeading();
       targetRollRate_from_targetRoll();
       ailerons_from_targetRollRate();
+      roll_protections();
     }
     else{
       modeH = MODE_MAN_FULL;
@@ -783,6 +837,7 @@ void loop() {
     if (gyroIsValid) {
       targetRollRate_from_targetRoll();
       ailerons_from_targetRollRate();
+      roll_protections();
     }
     else{
       modeH = MODE_MAN_FULL;
@@ -801,13 +856,14 @@ void loop() {
       targetRoll_from_targetHeading();
       targetRollRate_from_targetRoll();
       ailerons_from_targetRollRate();
+      roll_protections();
     }
 
     else if (gyroIsValid) {modeH = MODE_HEADING_HOLD;}
     else {modeH = MODE_MAN_FULL;}
   }
 
-  if (modeH == MODE_ILS) {
+  if (modeH == MODE_ILS) {                                               // to-do: re-write ILS code to do 'pitch for speed, thrust for pitch'
     if (gyroIsValid) {
       if (capturedILS[2] and capturedILS[3]) {targetHeading = runwayHeading;}
       else if (capturedILS[2]) {targetHeading = runwayHeading - 5;}
@@ -826,10 +882,32 @@ void loop() {
       targetRoll_from_targetHeading();
       targetRollRate_from_targetRoll();
       ailerons_from_targetRollRate();
+      roll_protections();
     }
     else {modeH = MODE_MAN_FULL;}
   }
 
+
+  if (modeH == MODE_MAN_RATES) {
+    if (gyroIsValid) {
+      targetRollRate = readChannel(rollChannel, -MAX_ROLL_RATE, MAX_ROLL_RATE, 0);
+      ailerons_from_targetRollRate();
+      roll_protections();
+    }
+    else {modeH = MODE_MAN_FULL;}
+  }
+
+  if (modeH == MODE_MAN_PROT) {
+    if (gyroIsValid) {
+      aileronAngle = readChannel(rollChannel, -AILERON_MAX_DEFLECTION, AILERON_MAX_DEFLECTION, 0);
+      roll_protections();
+    }
+    else {modeH = MODE_MAN_FULL;}
+  }
+
+  if (modeH == MODE_MAN_FULL) {
+    aileronAngle = readChannel(rollChannel, -AILERON_MAX_DEFLECTION, AILERON_MAX_DEFLECTION, 0);
+  }
 
 
 
@@ -980,7 +1058,6 @@ void loop() {
     dataFile.print(currentAltitude); dataFile.print("\t");
     dataFile.print(height); dataFile.print("\t");
     dataFile.print(sideslipAcc); dataFile.print("\t");
-    dataFile.print(yaw); dataFile.print("\t");
     dataFile.print(gps.satellites.value()); dataFile.print("\t");
     dataFile.print(anonymize_coordinate(currentLongitude)); dataFile.print("\t");
     dataFile.print(anonymize_coordinate(currentLattitude)); dataFile.print("\t");
@@ -994,6 +1071,7 @@ void loop() {
     dataFile.print(aileronAngle); dataFile.print("\t");
     dataFile.print(thrust); dataFile.print("\t");
     dataFile.print(newThrust); dataFile.print("\t");
+    dataFile.print(yaw); dataFile.print("\t");
     dataFile.print("\n");
     if (modeV == MODE_GROUND) {
       dataFile.close();
