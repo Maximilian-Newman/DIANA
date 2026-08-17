@@ -21,13 +21,12 @@ const byte sonarTrigPin = 46;
 const byte sonarEchoPin = 47;
 const byte IR_reciever = 2;
 const byte pitot1Pin = A0;
-//const byte pitot2Pin = A1; // redundant pitot tube will be added in the future
+const byte pitot2Pin = A1;
 
 
 // performance limits
-const byte MAX_AUTO_CAT = 3; // limit for flight mode category to allow during the flight (see above)
 const byte MAX_PITCH = 20;
-const byte MAX_ROLL = 30;
+const byte MAX_ROLL = 40;
 const byte MAX_PITCH_RATE = 10;
 const byte MAX_ROLL_RATE = 10;
 const byte MAX_ROLL_REDUCED = 10; // max roll during certain critical modes of flight
@@ -114,8 +113,6 @@ int currentAirspeed = 0;
 double currentAltitude = 0;
 unsigned long staticPressure = 0;
 long dynamicPressure = 0;
-unsigned long groundPressure = 101325;
-unsigned int groundTemperature = 273; // in kelvin
 long pitotError1 = 0; // systematic error to correct for
 long pitotError2 = 0; // systematic error to correct for
 long staticError = 0; // systematic error to correct for
@@ -123,13 +120,10 @@ double groundAltitude = 0;
 int currentHeading = 0;
 int runwayHeading = 0;
 unsigned long nextLogTime = 0;
-String braudcastedData = "";
 const char compile_date[] = __DATE__ " " __TIME__;
 unsigned int fileNum = 0;
-bool gyroWorking = true;
-bool compassWorking = true;
-bool pitotWorking = true;
-bool staticPressWorking = true;
+bool gyroIsValid = true;
+bool pitotIsValid = true;
 unsigned long lastStaticPortUpdate = 0;
 unsigned long lastGroundCom = 0;
 unsigned long lastGroundPingRQST = 0;
@@ -180,7 +174,7 @@ int groundProximity(){
 }
 
 int readChannel(int channelInput, int minLimit, int maxLimit, int defaultValue){
-  int ch = pulseIn(channelInput, HIGH, 30000);
+  int ch = pulseIn(channelInput, HIGH, 500);
   if (ch < 100) return defaultValue;
   if (ch < 840) return minLimit;
   if (ch > 1685) return maxLimit;
@@ -202,33 +196,7 @@ int rescale(int val, int fromS, int fromE, int toS, int toE) {
 
 unsigned long holdBraudcastsUntil = 0;
 
-void braudcast(String message, bool log = false, bool hold = true){ // transmit message to operator via bluetooth
 
-  if (log) {
-    message.replace("\n", "  \\n  ");
-    if (braudcastedData.indexOf(message) != -1){
-      return; // avoid flood of repeat messages
-    }
-
-    if (braudcastedData != "") {
-      braudcastedData += "\t";
-    }
-    braudcastedData += message;
-  }
-
-  if (hold or millis() > holdBraudcastsUntil) {
-    Serial.println(message);
-
-    while (message.length() > 10) {
-      Serial1.print(message.substring(0, 10));
-      message.remove(0, 10);
-      delay(20);
-    }
-    Serial1.println(message);
-
-    holdBraudcastsUntil = millis() + 1000;
-  }
-}
 
 void update_GPS() {
   while (Serial3.available()){
@@ -238,7 +206,7 @@ void update_GPS() {
 
 
 void update_gyro() {
-  if (gyroWorking){ // replace with new external IMC code when finalized
+  if (gyroIsValid){ // replace with new external IMC code when finalized
     gyro.update();
   }
 
@@ -248,33 +216,29 @@ void update_gyro() {
   currentPitchRate = (currentPitchRate + gyro.getGyroX()) / 2;
   currentRollRate = (currentRollRate + gyro.getGyroY()) / 2;
   sideslipAcc = sideslipAcc / 2 + gyro.getAccX() * 50.0;
+
+  currentHeading = 0;
 }
 
 
-
-
-unsigned int get_heading() {
-  return 0;
-}
 
 
 void update_pressure() {
 
-  if (pitotWorking or true) {
+  if (pitotIsValid or true) {
     //int p1 = ((analogRead(pitot1Pin) - pitotError1) / 1024 - 0.5) * 5; // conversion from voltage to kPa
     /* redundany code to activate when second pitot installed
 
     int p2 = ((analogRead(pitot2Pin) - pitotError2) / 1024 - 0.5) * 5;
     int diff = p2 - p1;
     if (diff < 0) {diff = -diff;}
-    if (diff > PITOT_DIFF_TOLERANCE) {pitotWorking = false;}
+    if (diff > PITOT_DIFF_TOLERANCE) {pitotIsValid = false;}
     dynamicPressure = (p1 + p2) / 2;*/
 
     dynamicPressure = analogRead(pitot1Pin) - 549;  // using simplified model
 
     if (dynamicPressure < -300) {
-      pitotWorking = false;
-      braudcast(F("Pitot unavailable"), true);
+      pitotIsValid = false;
     }
   }
 }
@@ -321,11 +285,11 @@ void start_data_recorder() {
     }
     dataFile.print(F("\n\n\ntime\tvertical mode\thorizontal mode\tairspeed\tpitch\troll\theading\taltitude\tstatic press\theight\tsideslipAcc\tyaw\tnum satellites\tlongitude\tlattitude\ttarget pitch\ttarget roll\ttarget pitch rate\t target roll rate\ttargetheading\ttarget altitude\televator\taileron\tthrust L\t thrust R\terrors and events\n"));
     nextLogTime = millis() + logInterval;
-    braudcast("Initialized flight data recorder: /DIANA/REC/R" + String(fileNum) + ".TXT");
+    //braudcast("Initialized flight data recorder: /DIANA/REC/R" + String(fileNum) + ".TXT");
 
 
   } else{
-    braudcast(F("File not created! The flight can't take place without a flight data recorder."));
+    //braudcast(F("File not created! The flight can't take place without a flight data recorder."));
     //while (true);
   }
 }
@@ -493,7 +457,7 @@ void setup() {
 
   // init flight data recorder
   if (!SD.begin(53)) {
-    braudcast(F("SD card not found! The flight can't take place without a flight data recorder."));
+    //braudcast(F("SD card not found! The flight can't take place without a flight data recorder."));
     //while (true);
   }
   else{
@@ -502,37 +466,12 @@ void setup() {
     SD.mkdir("/DIANA/WAYPTS");
   }
 
-//  WatchDog::init(WDT_trigger, OVF_500MS);
-//  WatchDog::stop();
 
-  byte gyroStatus = gyro.begin();
-  if (gyroStatus == 0){
-    gyro.setGyroOffsets(0, 0, 0);
-    gyro.setAccOffsets(0, 0, 0);
-  }
-  else{
-    braudcast("MPU6050 gyroscope error status: " + String(gyroStatus), true);
-    gyroWorking = false;
-  }
-
-  if (!compass.begin()) {
-    braudcast(F("Failed to connect to magnetic compass"), true);
-    compassWorking = false;
-  }
-
-  if (staticPort.begin()) {
-    staticPort.resetToDefaults();
-    staticPort.setSamplingMode(BMP180MI::MODE_UHR);
-  }
-  else{
-    braudcast(F("Failed to initialize static port pressure"), true);
-    staticPressWorking = false;
-  }
 
   update_pressure();
 
   nextLogTime = millis() + logInterval;
-  braudcast(F("Initialization Complete"));
+  //braudcast(F("Initialization Complete"));
   setupFinished = true;
 }
 
@@ -556,11 +495,8 @@ void setup() {
 
 
 void loop() {
-  LOOP_START:
 
   unsigned long t = millis();
-  
-  String dataBraudcast = "mode: " + String(modeV) + " / " + String(modeH);
 
   String command1 = "";
   String command2 = "";
@@ -590,9 +526,6 @@ void loop() {
       if (target >= 0 and target < 360) {
         targetHeading = target;
       }
-      else {
-        braudcast("Couldn't change target heading to: " + command2, true);
-      }
     }
 
     if (command1 == "TA") {
@@ -600,41 +533,18 @@ void loop() {
       if (target > 0) {
         targetAltitude = target;
       }
-      else {
-        braudcast("Couldn't change target altitude to: " + command2, true);
-      }
     }
 
     if (command1 == "RHDG") {
       runwayHeading = command2.toInt();
-      braudcast("new runway heading: " + String(runwayHeading), true);
+      //braudcast("new runway heading: " + String(runwayHeading), true);
     }
 
-    if (command1 == "R" and modeV == "GROUND") {
+    if (command1 == "R" and modeV == MODE_GROUND) {
 
-      if (command2 == "P"){ // recallibrate pressure
-        if (modeV == "GROUND"){
-          pitotError1 = analogRead(pitot1Pin);
-          //pitotError2 = analogRead(pitot2Pin);
-          staticError += staticPressure - groundPressure;
-          groundPressure += staticPressure - groundPressure;
-          Serial.println(staticError);
-          pressureCalibrated = true;
-          braudcast(F("Static port calibrated"), true);
-        }
-        else {
-          braudcast(F("Couldn't recalibrate static port, Not in GROUND mode"), true);
-        }
-      }
 
-      else if (command2 == "G"){ // recalibrate gyroscope
-        if (modeV == "GROUND"){
-          gyro.calcOffsets();
-          braudcast(F("Gyroscope calibrated"), true);
-        }
-        else {
-          braudcast(F("Couldn't recalibrate gyroscope, Not in GROUND mode"), true);
-        }
+      if (command2 == "G"){ // recalibrate gyroscope
+        
       }
 
       else if (command2 == "M1") { // recalibrate motor ESC's step 1 (battery disconnected)
@@ -649,14 +559,6 @@ void loop() {
         lastThrustR = 0;
         inESCReset = false;
       }
-    }
-
-    if (command1 == "SYS_P") {
-      groundPressure = command2.toInt() + staticError;
-    }
-
-    if (command1 == "SYS_T") {
-      groundTemperature = command2.toInt();
     }
   }
 
@@ -682,22 +584,6 @@ void loop() {
     }
   }
 
-  byte conditionsCat = 0;
-  //Serial.print(gyroWorking); Serial.print("\t"); Serial.print(pitotWorking); Serial.print("\t"); Serial.print(millis() - lastStaticPortUpdate); Serial.print("\n"); 
-  if (gyroWorking and pitotWorking and ((millis() - lastStaticPortUpdate < 1000 and pressureCalibrated) or (gps.location.isValid() and gps.satellites.value() >= 5 and groundAltitudeKnown))) {
-    conditionsCat = 1;
-    if (compassWorking) {
-      conditionsCat = 2;
-      if (gps.location.isValid() and gps.satellites.value() >= 5) {
-        conditionsCat = 3;
-      }
-    }
-  }
-  
-  if (conditionsCat > MAX_AUTO_CAT) {
-    conditionsCat = MAX_AUTO_CAT;
-  }
-
 
 
 
@@ -718,7 +604,6 @@ void loop() {
   reducedRoll = false;
   double currentLongitude = gps.location.lng();
   double currentLattitude = gps.location.lat();
-  currentHeading = get_heading();
   int height = groundProximity();
   update_pressure();
 
@@ -738,7 +623,7 @@ void loop() {
   }
 
   if (modeY == MODE_YAW_ACC) {
-    if (gyroWorking) {
+    if (gyroIsValid) {
       if (sideslipAcc > 0) {yaw += 1;}
       else {yaw -= 1;}
     }
@@ -755,18 +640,15 @@ void loop() {
     groundAltitude = gps.altitude.meters();
     if (!groundAltitudeKnown){
       groundAltitudeKnown = true;
-      braudcast(F("ground GPS altitude set"), true);
+      //braudcast(F("ground GPS altitude set"), true);
     }
   }
 
   if (gps.location.isValid() and gps.satellites.value() >= 5 and groundAltitudeKnown) {
     currentAltitude = gps.altitude.meters() - groundAltitude;
   }
-  else if (millis() - lastStaticPortUpdate < 1000){
-    currentAltitude = groundTemperature * (pow((float)staticPressure/groundPressure, (float)-9.80665/287*0.0065) - 1) / -0.0065;
-  }
 
-  if (pitotWorking){
+  if (pitotIsValid){
     //currentAirspeed = pow(2*dynamicPressure / 1.225, 0.5);
     currentAirspeed = dynamicPressure; // using simplified model
   }
@@ -774,7 +656,6 @@ void loop() {
 
 
   if (modeV == MODE_GROUND) {
-    dataBraudcast += "   Conditions: " + String(conditionsCat) + "   GPS: " + String(gps.satellites.value()) + "   height: " + String(height) + "   QFE: " + groundPressure + "   static press: " + String(staticPressure) + "   alt: " + String(currentAltitude);
     elevatorAngle = 90;
     aileronAngle = 0;
     thrust = 0;
@@ -798,15 +679,12 @@ void loop() {
 
 
   if (modeV == MODE_ALTITUDE_HOLD) {
-    dataBraudcast += "   target ALT: " + String(targetAltitude) + "   ALT: " + String(currentAltitude);
     int input = readChannel(pitchChannel, -30, 30, 0);
     if (input > 10) {
       targetAltitude -= 1;
-      braudcast("target ALT: " + String(targetAltitude), false, true);
     }
     else if (input < -10) {
       targetAltitude += 1;
-      braudcast("target ALT: " + String(targetAltitude), false, true);
     }
 
     targetPitch_from_targetAltitude();
@@ -815,16 +693,13 @@ void loop() {
   }
 
   if (modeH == MODE_HEADING_HOLD) {
-    dataBraudcast += "   target HDG: " + String(targetHeading) + "   HDG: " + String(currentHeading);
 
     int input = readChannel(rollChannel, -30, 30, 0);
     if (input > 10) {
       targetHeading += 1;
-      braudcast("target HDG: " + String(targetHeading), false, true);
     }
     else if (input < -10) {
       targetHeading -= 1;
-      braudcast("target HDG: " + String(targetHeading), false, true);
     }
 
     if (targetHeading >= 360) {targetHeading -= 360;}
@@ -855,7 +730,6 @@ void loop() {
   }
 
   if (modeH == MODE_GPS_WAYPOINT) {
-    dataBraudcast += "target long: " + String(targetLongitude) + "   target latt: " + String(targetLattitude) + "   target HDG: " + String(targetHeading) + "   HDG: " + String(currentHeading);
 
     float d_latt = targetLattitude - currentLattitude;
     float d_long = targetLongitude - currentLongitude;
@@ -877,13 +751,13 @@ void loop() {
     else if (capturedILS[0]) {targetPitch = APPROACH_ANGLE - 5;}
     else if (capturedILS[1]) {targetPitch = APPROACH_ANGLE + 5;}
     else {
-      braudcast(F("Go-around initiated, reason: lost glideslope"), true);
+      //braudcast(F("Go-around initiated, reason: lost glideslope"), true);
       go_around();
     }
 
     if (capturedILS[4]) {
       if (height > 150) {
-        braudcast(F("Go-around initiated, reason: too high at threshold"), true);
+        //braudcast(F("Go-around initiated, reason: too high at threshold"), true);
         go_around();
       }
       else {
@@ -896,12 +770,12 @@ void loop() {
     }
 
     if (height < 350 and modeH != "ILS") {
-      braudcast(F("Go-Around, reason: localiser not intercepted"), true);
+      //braudcast(F("Go-Around, reason: localiser not intercepted"), true);
       go_around();
     }
 
     if (height < 100) {
-      braudcast(F("Go-Around, reason: threshold beacon not found"), true);
+      //braudcast(F("Go-Around, reason: threshold beacon not found"), true);
       go_around();
     }
   }
@@ -915,12 +789,12 @@ void loop() {
     else if (capturedILS[2]) {targetHeading = runwayHeading - 5;}
     else if (capturedILS[3]) {targetHeading = runwayHeading + 5;}
     else {
-      braudcast(F("Go-around, reason: lost localiser"), true);
+      //braudcast(F("Go-around, reason: lost localiser"), true);
       go_around();
     }
 
     if (height < 350 and modeV != MODE_ILS) {
-      braudcast(F("Go-Around, reason: glideslope not intercepted"), true);
+      //braudcast(F("Go-Around, reason: glideslope not intercepted"), true);
       go_around();
     }
   }
@@ -930,7 +804,7 @@ void loop() {
     thrust = 0;
     targetPitch = 5; // to be adjusted after test flights
     if (millis() - flareStartTime > 5000) {
-      braudcast(F("Go-around initiated, reason: 5 second flare rule"), true);
+      //braudcast(F("Go-around initiated, reason: 5 second flare rule"), true);
       go_around();
     }
     if (height <= GROUND_HEIGHT) {
@@ -940,7 +814,10 @@ void loop() {
       modeT = MODE_GROUND;
     }
 
-    if (readChannel(thrustChannel, 0, 100, 0) > 90) {go_around();}
+    if (readChannel(thrustChannel, 0, 100, 0) > 90) {
+      go_around();
+      //braudcast: manual go-around triggered
+    }
   }
 
 
@@ -1063,6 +940,9 @@ void loop() {
     lastThrustR = thrustR;
   }
 
+  if (modeT != MODE_GROUND and !dataFile) {
+    start_data_recorder();
+  }
 
   if (nextLogTime < millis() and dataFile) {
     nextLogTime += logInterval;
@@ -1091,12 +971,9 @@ void loop() {
     dataFile.print(aileronAngle); dataFile.print("\t");
     dataFile.print(thrustL); dataFile.print("\t");
     dataFile.print(thrustR); dataFile.print("\t");
-    dataFile.print(braudcastedData + "\n");
-    braudcastedData = "";
-    if (modeV == "GROUND") {
+    dataFile.print("\n");
+    if (modeV == MODE_GROUND) {
       dataFile.close();
     }
   }
-
-  braudcast(dataBraudcast, false, false);
 }
