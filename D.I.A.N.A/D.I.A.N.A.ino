@@ -30,7 +30,6 @@ const byte MAX_ROLL = 40;
 const byte MAX_PITCH_RATE = 10;
 const byte MAX_ROLL_RATE = 10;
 const byte MAX_ROLL_REDUCED = 10; // max roll during certain critical modes of flight
-const byte MAX_YAW = 25;
 const unsigned int STALL_SPEED = 0; // not known yet
 const unsigned int MAX_SPEED = 0; // needs to be configured
 const int APPROACH_ANGLE = -3; // angle to follow when on ILS approach
@@ -46,6 +45,8 @@ const byte ELEVATOR_MAX = 165;
 const byte AILERON_OFFSET_R = 90;
 const byte AILERON_OFFSET_L = 90;
 const byte AILERON_MAX_DEFLECTION = 40;
+const byte MAX_YAW = 40;
+const byte RUDDER_OFFSET = 90;
 
 
 const unsigned int logInterval = 5000; // time between samples in flight data recorder
@@ -55,13 +56,7 @@ const unsigned int logInterval = 5000; // time between samples in flight data re
 #include <SD.h>
 #include <TinyGPS++.h>
 #include "Wire.h"
-#include <MPU6050_light.h>
-#include <DFRobot_QMC5883.h>
-//#include "WatchDog.h"
-#include <BMP180I2C.h>
 #include <IRremote.h>
-#include <LoRa.h>
-#include <setjmp.h>
 
 Servo elevators;
 Servo aileronL;
@@ -69,12 +64,10 @@ Servo aileronR;
 Servo leftMotor;
 Servo rightMotor;
 Servo sonarPitch;
+Servo rudder;
 
 File dataFile;
 TinyGPSPlus gps;
-MPU6050 gyro(Wire);
-DFRobot_QMC5883 compass(&Wire, 0x1E);
-BMP180I2C staticPort(0x77);
 
 const byte MODE_GROUND = 0;
 const byte MODE_MAN_FULL = 1;
@@ -98,7 +91,7 @@ byte modeT = MODE_GROUND; // thrust
 
 int targetHeading = 0;
 int targetRoll = 0;
-unsigned int targetAltitude = 0;
+double targetAltitude = 0;
 unsigned int targetSpeed = 0;
 unsigned int elevatorAngle = 90;
 int aileronAngle = 0;
@@ -111,19 +104,18 @@ float targetLongitude = 0;
 float targetLattitude = 0;
 int currentAirspeed = 0;
 double currentAltitude = 0;
-unsigned long staticPressure = 0;
 long dynamicPressure = 0;
 long pitotError1 = 0; // systematic error to correct for
 long pitotError2 = 0; // systematic error to correct for
-long staticError = 0; // systematic error to correct for
 double groundAltitude = 0;
 int currentHeading = 0;
 int runwayHeading = 0;
 unsigned long nextLogTime = 0;
 const char compile_date[] = __DATE__ " " __TIME__;
 unsigned int fileNum = 0;
-bool gyroIsValid = true;
-bool pitotIsValid = true;
+bool gyroIsValid = false;
+bool pitotIsValid = false;
+bool gpsIsValid = false;
 unsigned long lastStaticPortUpdate = 0;
 unsigned long lastGroundCom = 0;
 unsigned long lastGroundPingRQST = 0;
@@ -134,13 +126,11 @@ const unsigned int ILS_TIMEOUT = 800;
 #define numILSBeacons 5
 unsigned long lastSeenILS[numILSBeacons];
 bool capturedILS[numILSBeacons];
-bool leftMotorOn = false;
-bool rightMotorOn = false;
+bool MotorOn = false;
 bool inESCReset = false;
 unsigned long flareStartTime = 0;
 byte thrust = 0;
-byte lastThrustL = 0;
-byte lastThrustR = 0;
+byte lastThrust = 0;
 int lastHeight = 0;
 int yaw = 0;
 bool reducedRoll = false;
@@ -202,20 +192,32 @@ void update_GPS() {
   while (Serial3.available()){
     gps.encode(Serial3.read());
   }
+
+  gpsIsValid = (gps.location.isValid() and gps.satellites.value() >= 5);
+  
+  if (gpsIsValid and modeV == MODE_GROUND) {
+    groundAltitude = gps.altitude.meters();
+    if (!groundAltitudeKnown){
+      groundAltitudeKnown = true;
+      //braudcast(F("ground GPS altitude set"), true);
+    }
+  }
+
+  if (gpsIsValid and groundAltitudeKnown) {
+    currentAltitude = gps.altitude.meters() - groundAltitude;
+  }
 }
 
 
 void update_gyro() {
-  if (gyroIsValid){ // replace with new external IMC code when finalized
-    gyro.update();
-  }
+  gyroIsValid = false;
 
 
-  currentPitch = gyro.getAngleX() - 14;
-  currentRoll = gyro.getAngleY();
-  currentPitchRate = (currentPitchRate + gyro.getGyroX()) / 2;
-  currentRollRate = (currentRollRate + gyro.getGyroY()) / 2;
-  sideslipAcc = sideslipAcc / 2 + gyro.getAccX() * 50.0;
+  //currentPitch = gyro.getAngleX() - 14;
+  //currentRoll = gyro.getAngleY();
+  //currentPitchRate = (currentPitchRate + gyro.getGyroX()) / 2;
+  //currentRollRate = (currentRollRate + gyro.getGyroY()) / 2;
+  //sideslipAcc = sideslipAcc / 2 + gyro.getAccX() * 50.0;
 
   currentHeading = 0;
 }
@@ -223,23 +225,22 @@ void update_gyro() {
 
 
 
-void update_pressure() {
+void update_airspeed() {
+  //int p1 = ((analogRead(pitot1Pin) - pitotError1) / 1024 - 0.5) * 5; // conversion from voltage to kPa
+  /* redundany code to activate when second pitot installed
 
-  if (pitotIsValid or true) {
-    //int p1 = ((analogRead(pitot1Pin) - pitotError1) / 1024 - 0.5) * 5; // conversion from voltage to kPa
-    /* redundany code to activate when second pitot installed
+  int p2 = ((analogRead(pitot2Pin) - pitotError2) / 1024 - 0.5) * 5;
+  int diff = p2 - p1;
+  if (diff < 0) {diff = -diff;}
+  if (diff > PITOT_DIFF_TOLERANCE) {pitotIsValid = false;}
+  dynamicPressure = (p1 + p2) / 2;*/
 
-    int p2 = ((analogRead(pitot2Pin) - pitotError2) / 1024 - 0.5) * 5;
-    int diff = p2 - p1;
-    if (diff < 0) {diff = -diff;}
-    if (diff > PITOT_DIFF_TOLERANCE) {pitotIsValid = false;}
-    dynamicPressure = (p1 + p2) / 2;*/
+  dynamicPressure = analogRead(pitot1Pin) - 549;  // using simplified model
 
-    dynamicPressure = analogRead(pitot1Pin) - 549;  // using simplified model
+  currentAirspeed = dynamicPressure; // using simplified model
 
-    if (dynamicPressure < -300) {
-      pitotIsValid = false;
-    }
+  if (dynamicPressure < -300) {
+    pitotIsValid = false;
   }
 }
 
@@ -440,6 +441,7 @@ void setup() {
   //elevators.attach(8);
   //aileronL.attach(23);
   //aileronR.attach();
+  //rudder.attach();
   //leftMotor.attach(48);
   //rightMotor.attach(49);
   //sonarPitch.attach(45);
@@ -468,7 +470,7 @@ void setup() {
 
 
 
-  update_pressure();
+  update_airspeed();
 
   nextLogTime = millis() + logInterval;
   //braudcast(F("Initialization Complete"));
@@ -542,12 +544,7 @@ void loop() {
 
     if (command1 == "R" and modeV == MODE_GROUND) {
 
-
-      if (command2 == "G"){ // recalibrate gyroscope
-        
-      }
-
-      else if (command2 == "M1") { // recalibrate motor ESC's step 1 (battery disconnected)
+      if (command2 == "M1") { // recalibrate motor ESC's step 1 (battery disconnected)
         leftMotor.write(180);
         rightMotor.write(180);
         inESCReset = true;
@@ -555,8 +552,7 @@ void loop() {
       else if (command2 == "M2") { // recalibrate motor ESC's step 2 (battery connected)
         leftMotor.write(1);
         rightMotor.write(1);
-        lastThrustL = 0;
-        lastThrustR = 0;
+        lastThrust = 0;
         inESCReset = false;
       }
     }
@@ -598,16 +594,21 @@ void loop() {
 
 
 
+  reducedRoll = false;
+
   update_gyro();
   update_GPS();
-
-  reducedRoll = false;
   double currentLongitude = gps.location.lng();
   double currentLattitude = gps.location.lat();
   int height = groundProximity();
-  update_pressure();
+  update_airspeed();
 
 
+  if (height < 120) {reducedRoll = true;}
+
+
+
+  // use full left or full right rudder on controller to force manual modes
 
   int yawcont = readChannel(yawChannel, -10, 10, 0);
   if (yawcont <= -9) {
@@ -622,36 +623,14 @@ void loop() {
     modeT = MODE_MAN_PROT;
   }
 
-  if (modeY == MODE_YAW_ACC) {
-    if (gyroIsValid) {
-      if (sideslipAcc > 0) {yaw += 1;}
-      else {yaw -= 1;}
-    }
-
-    else {
-      modeY = MODE_MAN_FULL;
-    }
-  }
-
-  if (height < 120) {reducedRoll = true;}
 
 
-  if (gps.location.isValid() and gps.satellites.value() >= 5 and modeV == MODE_GROUND) {
-    groundAltitude = gps.altitude.meters();
-    if (!groundAltitudeKnown){
-      groundAltitudeKnown = true;
-      //braudcast(F("ground GPS altitude set"), true);
-    }
-  }
 
-  if (gps.location.isValid() and gps.satellites.value() >= 5 and groundAltitudeKnown) {
-    currentAltitude = gps.altitude.meters() - groundAltitude;
-  }
 
-  if (pitotIsValid){
-    //currentAirspeed = pow(2*dynamicPressure / 1.225, 0.5);
-    currentAirspeed = dynamicPressure; // using simplified model
-  }
+
+
+  
+
   
 
 
@@ -680,10 +659,10 @@ void loop() {
 
   if (modeV == MODE_ALTITUDE_HOLD) {
     int input = readChannel(pitchChannel, -30, 30, 0);
-    if (input > 10) {
+    if (input > 20) {
       targetAltitude -= 1;
     }
-    else if (input < -10) {
+    else if (input < -20) {
       targetAltitude += 1;
     }
 
@@ -692,28 +671,6 @@ void loop() {
     elevator_from_targetPitchRate();
   }
 
-  if (modeH == MODE_HEADING_HOLD) {
-
-    int input = readChannel(rollChannel, -30, 30, 0);
-    if (input > 10) {
-      targetHeading += 1;
-    }
-    else if (input < -10) {
-      targetHeading -= 1;
-    }
-
-    if (targetHeading >= 360) {targetHeading -= 360;}
-    if (targetHeading < 0) {targetHeading += 360;}
-
-    targetRoll_from_targetHeading();
-    targetRollRate_from_targetRoll();
-    ailerons_from_targetRollRate();
-  }
-
-  if (modeH == MODE_ANGLE_HOLD) {
-    targetRollRate_from_targetRoll();
-    ailerons_from_targetRollRate();
-  }
 
   if (modeV == MODE_OPEN_CLIMB) {
     if (currentPitch < 3) {
@@ -721,7 +678,7 @@ void loop() {
       targetPitchRate_from_targetPitch();
     }
     else {
-      targetPitchRate = currentAirspeed - STALL_SPEED*1.5;
+      targetPitchRate = currentAirspeed - targetSpeed;
       if (targetPitchRate > MAX_PITCH_RATE) {targetPitchRate = MAX_PITCH_RATE;}
       if (targetPitchRate < -MAX_PITCH_RATE) {targetPitchRate = -MAX_PITCH_RATE;}
     }
@@ -729,19 +686,7 @@ void loop() {
     modeT = MODE_OPEN_CLIMB;
   }
 
-  if (modeH == MODE_GPS_WAYPOINT) {
 
-    float d_latt = targetLattitude - currentLattitude;
-    float d_long = targetLongitude - currentLongitude;
-    targetHeading = tan(d_long/d_latt) * 180/PI;
-    if (d_long > 0 and d_latt < 0) {targetHeading += 90;}
-    if (d_long < 0 and d_latt < 0) {targetHeading -= 180;}
-    if (d_long < 0 and d_latt > 0) {targetHeading -= 90;}
-
-    targetRoll_from_targetHeading();
-    targetRollRate_from_targetRoll();
-    ailerons_from_targetRollRate();
-  }
 
   if (modeV == MODE_ILS) {
     if (height > 300){targetSpeed = STALL_SPEED * 1.5;}
@@ -780,31 +725,17 @@ void loop() {
     }
   }
 
-  if (modeH == MODE_ILS) {
-    targetRoll_from_targetHeading();
-    targetRollRate_from_targetRoll();
-    ailerons_from_targetRollRate();
 
-    if (capturedILS[2] and capturedILS[3]) {targetHeading = runwayHeading;}
-    else if (capturedILS[2]) {targetHeading = runwayHeading - 5;}
-    else if (capturedILS[3]) {targetHeading = runwayHeading + 5;}
-    else {
-      //braudcast(F("Go-around, reason: lost localiser"), true);
-      go_around();
-    }
-
-    if (height < 350 and modeV != MODE_ILS) {
-      //braudcast(F("Go-Around, reason: glideslope not intercepted"), true);
-      go_around();
-    }
-  }
 
   if (modeV == MODE_FLARE) {
-    reducedRoll = true;
-    thrust = 0;
+    modeH = MODE_ANGLE_HOLD;
+    targetRoll = 0;
+    modeY = MODE_FLARE;
+    modeT = MODE_GROUND;
+
     targetPitch = 5; // to be adjusted after test flights
     if (millis() - flareStartTime > 5000) {
-      //braudcast(F("Go-around initiated, reason: 5 second flare rule"), true);
+      //braudcast(F("Go-around initiated, reason: >5 second flare"), true);
       go_around();
     }
     if (height <= GROUND_HEIGHT) {
@@ -826,6 +757,78 @@ void loop() {
 
 
 
+  if (modeH == MODE_HEADING_HOLD) {
+    if (gyroIsValid) {
+      int input = readChannel(rollChannel, -30, 30, 0);
+      if (input > 20) {
+        targetHeading += 1;
+      }
+      else if (input < -20) {
+        targetHeading -= 1;
+      }
+
+      if (targetHeading >= 360) {targetHeading -= 360;}
+      if (targetHeading < 0) {targetHeading += 360;}
+
+      targetRoll_from_targetHeading();
+      targetRollRate_from_targetRoll();
+      ailerons_from_targetRollRate();
+    }
+    else{
+      modeH = MODE_MAN_FULL;
+    }
+  }
+
+  if (modeH == MODE_ANGLE_HOLD) {
+    if (gyroIsValid) {
+      targetRollRate_from_targetRoll();
+      ailerons_from_targetRollRate();
+    }
+    else{
+      modeH = MODE_MAN_FULL;
+    }
+  }
+
+  if (modeH == MODE_GPS_WAYPOINT) {
+    if (gyroIsValid and gpsIsValid) {
+      float d_latt = targetLattitude - currentLattitude;
+      float d_long = targetLongitude - currentLongitude;
+      targetHeading = atan(d_long/d_latt) * 180/PI;
+      if (d_long > 0 and d_latt < 0) {targetHeading += 90;}
+      if (d_long < 0 and d_latt < 0) {targetHeading -= 180;}
+      if (d_long < 0 and d_latt > 0) {targetHeading -= 90;}
+
+      targetRoll_from_targetHeading();
+      targetRollRate_from_targetRoll();
+      ailerons_from_targetRollRate();
+    }
+
+    else if (gyroIsValid) {modeH = MODE_HEADING_HOLD;}
+    else {modeH = MODE_MAN_FULL;}
+  }
+
+  if (modeH == MODE_ILS) {
+    if (gyroIsValid) {
+      if (capturedILS[2] and capturedILS[3]) {targetHeading = runwayHeading;}
+      else if (capturedILS[2]) {targetHeading = runwayHeading - 5;}
+      else if (capturedILS[3]) {targetHeading = runwayHeading + 5;}
+      else {
+        //braudcast(F("Go-around, reason: lost localiser"), true);
+        go_around();
+      }
+
+      if (height < 350 and modeV != MODE_ILS) {
+        //braudcast(F("Go-Around, reason: glideslope not intercepted"), true);
+        go_around();
+      }
+
+    
+      targetRoll_from_targetHeading();
+      targetRollRate_from_targetRoll();
+      ailerons_from_targetRollRate();
+    }
+    else {modeH = MODE_MAN_FULL;}
+  }
 
 
 
@@ -841,6 +844,28 @@ void loop() {
 
 
 
+
+
+
+
+
+
+
+
+  if (modeY == MODE_YAW_ACC) {
+    if (gyroIsValid) {
+      if      (sideslipAcc > 0 and yaw <  MAX_YAW) {yaw += 1;}
+      else if (sideslipAcc < 0 and yaw > -MAX_YAW) {yaw -= 1;}
+    }
+
+    else {
+      modeY = MODE_MAN_FULL;
+    }
+  }
+
+  if (modeY == MODE_MAN_FULL) {
+    yaw = readChannel(yawChannel, -MAX_YAW, MAX_YAW, 0);
+  }
 
 
 
@@ -858,8 +883,25 @@ void loop() {
 
 
   if (modeT == MODE_THRUST_SPEED_HOLD) {
-    if (targetSpeed > currentAirspeed and thrust < MAX_THRUST) {thrust += 1;}
-    else if (thrust > 0) {thrust -= 1;}
+    if (pitotIsValid) {
+      if (targetSpeed > currentAirspeed and thrust < MAX_THRUST) {thrust = lastThrust + 1;}
+      else if (thrust > 0) {thrust -= 1;}
+    }
+    else {
+      modeT = MODE_MAN_FULL;
+    }
+  }
+
+  if (modeT == MODE_MAN_FULL) {
+    thrust = readChannel(thrustChannel, 0, MAX_THRUST, 0);
+  }
+
+  if (modeT == MODE_GROUND) {
+    thrust = 0;
+  }
+
+  if (modeT == MODE_OPEN_CLIMB) {
+    thrust = MAX_THRUST;
   }
 
 
@@ -870,7 +912,6 @@ void loop() {
   if (aileronAngle < -AILERON_MAX_DEFLECTION) {aileronAngle = -AILERON_MAX_DEFLECTION;}
   if (aileronAngle > AILERON_MAX_DEFLECTION) {aileronAngle = AILERON_MAX_DEFLECTION;}
 
-  if (yaw < 5 and yaw > -5) {yaw = 0;}
 
 
 
@@ -885,59 +926,40 @@ void loop() {
 
 
 
-  int thrustL = thrust + yaw;
-  int thrustR = thrust - yaw;
+  int newThrust = thrust;
 
 
-  if (thrustL > 10) {leftMotorOn = true;} // prevent bouncing in signal at low thrust levels from stalling the motors
-  if (thrustL < 3) {leftMotorOn = false;}
-  if (leftMotorOn == false){
-    thrustL = 0;
+  if (newThrust > 10) {MotorOn = true;} // prevent bouncing in signal at low thrust levels from stalling the motors
+  if (newThrust < 3) {MotorOn = false;}
+  if (MotorOn == false){
+    newThrust = 0;
   }
 
 
-  if (thrustR > 10) {rightMotorOn = true;} // prevent bouncing in signal at low thrust levels from stalling the motors
-  if (thrustR < 3) {rightMotorOn = false;}
-  if (rightMotorOn == false){
-    thrustR = 0;
-  }
 
   // prevent sudden increases in thrust, which can stall motors, make increase gradual.
-  if (thrustL - lastThrustL > MAX_THRUST_CHANGE_RATE * 500) {
+  if (newThrust - lastThrust > MAX_THRUST_CHANGE_RATE * 500) {
     if (millis() - t >= 500) {
-      thrustL = lastThrustL + MAX_THRUST_CHANGE_RATE * 500;
+      newThrust = lastThrust + MAX_THRUST_CHANGE_RATE * 500;
     }
     else{
-      thrustL = lastThrustL + MAX_THRUST_CHANGE_RATE * (millis() - t);
+      newThrust = lastThrust + MAX_THRUST_CHANGE_RATE * (millis() - t);
     }
   }
 
 
-  if (thrustR - lastThrustR > MAX_THRUST_CHANGE_RATE * 500) {
-    if (millis() - t >= 500) {
-      thrustR = lastThrustR + MAX_THRUST_CHANGE_RATE * 500;
-    }
-    else{
-      thrustR = lastThrustR + MAX_THRUST_CHANGE_RATE * (millis() - t);
-    }
-  }
-
-
-  if (thrustL < 0) {thrustL = 0;}
-  if (thrustR < 0) {thrustR = 0;}
-  if (thrustL > MAX_THRUST) {thrustL = MAX_THRUST;}
-  if (thrustR > MAX_THRUST) {thrustR = MAX_THRUST;}
+  if (newThrust > MAX_THRUST) {newThrust = MAX_THRUST;}
 
 
   elevators.write(elevatorAngle);
   aileronL.write(aileronAngle + AILERON_OFFSET_L);
   aileronR.write(aileronAngle + AILERON_OFFSET_R);
+  rudder.write(yaw + RUDDER_OFFSET);
 
   if (!inESCReset) {
-    leftMotor.write(thrustL);
-    rightMotor.write(thrustR);
-    lastThrustL = thrustL;
-    lastThrustR = thrustR;
+    leftMotor.write(newThrust);
+    rightMotor.write(newThrust);
+    lastThrust = newThrust;
   }
 
   if (modeT != MODE_GROUND and !dataFile) {
@@ -949,12 +971,13 @@ void loop() {
     dataFile.print(millis() / 1000); dataFile.print("\t");
     dataFile.print(modeV); dataFile.print("\t");
     dataFile.print(modeH); dataFile.print("\t");
+    dataFile.print(modeY); dataFile.print("\t");
+    dataFile.print(modeT); dataFile.print("\t");
     dataFile.print(currentAirspeed); dataFile.print("\t");
     dataFile.print(currentPitch); dataFile.print("\t");
     dataFile.print(currentRoll); dataFile.print("\t");
     dataFile.print(currentHeading); dataFile.print("\t");
     dataFile.print(currentAltitude); dataFile.print("\t");
-    dataFile.print(staticPressure); dataFile.print("\t");
     dataFile.print(height); dataFile.print("\t");
     dataFile.print(sideslipAcc); dataFile.print("\t");
     dataFile.print(yaw); dataFile.print("\t");
@@ -969,8 +992,8 @@ void loop() {
     dataFile.print(targetAltitude); dataFile.print("\t");
     dataFile.print(elevatorAngle); dataFile.print("\t");
     dataFile.print(aileronAngle); dataFile.print("\t");
-    dataFile.print(thrustL); dataFile.print("\t");
-    dataFile.print(thrustR); dataFile.print("\t");
+    dataFile.print(thrust); dataFile.print("\t");
+    dataFile.print(newThrust); dataFile.print("\t");
     dataFile.print("\n");
     if (modeV == MODE_GROUND) {
       dataFile.close();
